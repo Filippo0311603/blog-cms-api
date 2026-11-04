@@ -1,5 +1,7 @@
 # BlogCMS API
 
+[![CI](https://github.com/Filippo0311603/blog-cms-api/actions/workflows/ci.yml/badge.svg)](https://github.com/Filippo0311603/blog-cms-api/actions/workflows/ci.yml)
+
 REST API for a blog with a small content management system (CMS), built with
 **Node.js, Express 5, TypeScript (strict), MongoDB/Mongoose and zod**.
 Readers browse and filter published posts; the CMS creates, edits, publishes and deletes them.
