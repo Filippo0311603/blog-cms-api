@@ -1,0 +1,15 @@
+# Optional: a real MongoDB for local development.
+#   docker compose up -d
+#   MONGODB_URI=mongodb://localhost:27017/blogcms npm run dev
+services:
+  mongo:
+    image: mongo:8
+    container_name: blogcms-mongo
+    restart: unless-stopped
+    ports:
+      - '27017:27017'
+    volumes:
+      - mongo-data:/data/db
+
+volumes:
+  mongo-data:

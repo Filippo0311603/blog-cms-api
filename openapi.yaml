@@ -1,0 +1,349 @@
+openapi: 3.0.3
+info:
+  title: BlogCMS API
+  version: 1.0.0
+  description: |
+    REST API for a blog with a small CMS.
+
+    * **Reader** endpoints (`/api/v1/posts`) are public and only ever return **published** posts.
+    * **CMS** endpoints (`/api/v1/cms/*`) require `Authorization: Bearer <token>`.
+      The default test token is `brianfox-cms-token` (override with `CMS_API_TOKEN`).
+    * Every error uses the shape `{ "error": { "code", "message", "details?" } }`.
+    * A malformed post id is reported as `404` (it can never match a post).
+servers:
+  - url: /
+tags:
+  - name: Reader
+  - name: CMS
+  - name: System
+security: []
+paths:
+  /health:
+    get:
+      tags: [System]
+      summary: Liveness and database state
+      responses:
+        '200':
+          description: Service and database are up
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+        '503':
+          description: Database is not connected
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+  /api/v1/posts:
+    get:
+      tags: [Reader]
+      summary: List published posts (newest first)
+      parameters:
+        - $ref: '#/components/parameters/Hashtags'
+        - $ref: '#/components/parameters/Match'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of published posts
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PostPage' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/v1/posts/{id}:
+    get:
+      tags: [Reader]
+      summary: Get a published post
+      description: Drafts and unknown or malformed ids all return 404.
+      parameters:
+        - $ref: '#/components/parameters/PostId'
+      responses:
+        '200':
+          description: The post
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PostResponse' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/v1/cms/posts:
+    get:
+      tags: [CMS]
+      summary: List all posts, drafts included (newest created first)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/PostStatus' }
+        - $ref: '#/components/parameters/Hashtags'
+        - $ref: '#/components/parameters/Match'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of posts
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PostPage' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      tags: [CMS]
+      summary: Create a post
+      description: The author is always "Brian Fox"; an `author` sent by the client is ignored.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreatePost' }
+      responses:
+        '201':
+          description: Created
+          headers:
+            Location:
+              description: URL of the new post
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PostResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/v1/cms/posts/{id}:
+    parameters:
+      - $ref: '#/components/parameters/PostId'
+    get:
+      tags: [CMS]
+      summary: Get any post, drafts included
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: The post
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PostResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    patch:
+      tags: [CMS]
+      summary: Partially update title, body and/or hashtags
+      description: |
+        Unknown fields are rejected with 400. In particular `status` cannot be changed here
+        (use publish/unpublish) and `author` cannot be changed at all.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdatePost' }
+      responses:
+        '200':
+          description: The updated post
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PostResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      tags: [CMS]
+      summary: Delete a post
+      security: [{ bearerAuth: [] }]
+      responses:
+        '204': { description: Deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/v1/cms/posts/{id}/publish:
+    post:
+      tags: [CMS]
+      summary: Publish a post
+      description: Idempotent. Publishing an already published post returns 200 with `publishedAt` unchanged.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/PostId'
+      responses:
+        '200':
+          description: The published post
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PostResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/v1/cms/posts/{id}/unpublish:
+    post:
+      tags: [CMS]
+      summary: Move a post back to draft
+      description: Idempotent. Sets `status` to draft and `publishedAt` to null.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/PostId'
+      responses:
+        '200':
+          description: The draft post
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PostResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Default test token `brianfox-cms-token`
+  parameters:
+    PostId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, example: 66f1c0a2b3c4d5e6f7a8b9c0 }
+      description: 24-character hex ObjectId (case-insensitive). Any other value returns 404.
+    Hashtags:
+      name: hashtags
+      in: query
+      description: |
+        Comma-separated (`hashtags=a,b`) and/or repeated (`hashtags=a&hashtags=b`). Normalized like
+        stored ones ("#NodeJS" equals "nodejs"); a literal `#` must be URL-encoded as `%23`.
+      style: form
+      explode: true
+      schema:
+        oneOf:
+          - { type: string, example: 'nodejs,typescript' }
+          - { type: array, items: { type: string } }
+    Match:
+      name: match
+      in: query
+      description: "`any` = has at least one of the hashtags, `all` = has every hashtag"
+      schema: { type: string, enum: [any, all], default: any }
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    Limit:
+      name: limit
+      in: query
+      description: Page size. Values above 100 are accepted and capped to 100 (see `meta.limit`).
+      schema: { type: integer, minimum: 1, default: 10 }
+  responses:
+    ValidationError:
+      description: Invalid input or malformed JSON
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: Missing or invalid bearer token
+      headers:
+        WWW-Authenticate:
+          schema: { type: string, example: 'Bearer realm="BlogCMS"' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    UnsupportedMediaType:
+      description: Request body is not JSON, or uses an unsupported encoding
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    PayloadTooLarge:
+      description: Request body exceeds the size limit (default 100kb)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    InternalError:
+      description: Unexpected server error (no internals are exposed)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    PostStatus:
+      type: string
+      enum: [draft, published]
+    Post:
+      type: object
+      properties:
+        id: { type: string, example: 66f1c0a2b3c4d5e6f7a8b9c0 }
+        title: { type: string, maxLength: 200 }
+        body: { type: string }
+        hashtags:
+          type: array
+          maxItems: 20
+          items: { type: string }
+        status: { $ref: '#/components/schemas/PostStatus' }
+        author: { type: string, example: Brian Fox }
+        publishedAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    PostResponse:
+      type: object
+      properties:
+        data: { $ref: '#/components/schemas/Post' }
+    PostPage:
+      type: object
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/Post' }
+        meta:
+          type: object
+          properties:
+            page: { type: integer }
+            limit: { type: integer }
+            total: { type: integer }
+            totalPages: { type: integer }
+    CreatePost:
+      type: object
+      required: [title, body]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 200 }
+        body: { type: string, minLength: 1 }
+        hashtags:
+          type: array
+          maxItems: 20
+          items: { type: string }
+          description: Trimmed, leading '#' stripped, lowercased, de-duplicated. Letters, numbers, underscore only.
+        status:
+          allOf: [{ $ref: '#/components/schemas/PostStatus' }]
+          default: draft
+    UpdatePost:
+      type: object
+      minProperties: 1
+      additionalProperties: false
+      properties:
+        title: { type: string, minLength: 1, maxLength: 200 }
+        body: { type: string, minLength: 1 }
+        hashtags:
+          type: array
+          maxItems: 20
+          items: { type: string }
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              example: VALIDATION_ERROR
+            message: { type: string }
+            details: {}
+    Health:
+      type: object
+      properties:
+        status: { type: string, enum: [ok, degraded] }
+        db: { type: string, enum: [connected, disconnected] }
+        uptime: { type: integer, description: Seconds }
