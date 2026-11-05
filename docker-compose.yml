@@ -3,7 +3,10 @@
 #   MONGODB_URI=mongodb://localhost:27017/blogcms npm run dev
 services:
   mongo:
-    image: mongo:8
+    # Pinned to the version the tests run against (MONGOMS_VERSION in CI). Newer 8.x images (e.g. 8.3.13)
+    # refuse to start on Linux kernel 6.19+, which includes the 7.0 kernels of Ubuntu 26.04
+    # (and the ubuntu-latest CI runner): https://jira.mongodb.org/browse/SERVER-121912
+    image: mongo:8.2.6
     container_name: blogcms-mongo
     restart: unless-stopped
     ports:

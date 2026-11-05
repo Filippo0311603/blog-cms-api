@@ -24,7 +24,7 @@ The first run downloads a `mongod` binary, so it needs internet access once.
 ### Using a real MongoDB
 
 ```bash
-docker compose up -d mongo                 # starts only mongo:8 on localhost:27017
+docker compose up -d mongo                 # starts only MongoDB 8.2 on localhost:27017
 cp .env.example .env                      # then set MONGODB_URI=mongodb://localhost:27017/blogcms
 npm run dev
 ```
