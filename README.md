@@ -2,222 +2,178 @@
 
 [![CI](https://github.com/Filippo0311603/blog-cms-api/actions/workflows/ci.yml/badge.svg)](https://github.com/Filippo0311603/blog-cms-api/actions/workflows/ci.yml)
 
-REST API for a blog with a small content management system (CMS), built with
-**Node.js, Express 5, TypeScript (strict), MongoDB/Mongoose and zod**.
-Readers browse and filter published posts; the CMS creates, edits, publishes and deletes them.
+A REST API for a blog and its small CMS, built with **Node.js, Express 5, TypeScript (strict), MongoDB/Mongoose and zod**.
+Readers list and filter published posts; the CMS (behind a hardcoded bearer token) creates, edits, publishes, unpublishes and deletes them.
+Beyond the five calls in the brief it covers the unwritten requirements: draft privacy, validation, a uniform error shape, pagination, caching, rate limiting,
+request tracing and a container that is smoke-tested in CI. Tests: 92, all against a real MongoDB (in memory).
 
-## Quick start (zero setup)
+## Quick start (30 seconds)
 
-```bash
-npm install
-npm run dev
-```
-
-With no `MONGODB_URI`, the dev server starts an **in-memory MongoDB** automatically
-(`mongodb-memory-server`) and logs a warning: **data is not persisted** across restarts.
-The first run downloads a `mongod` binary, so it needs internet access once.
-
-- API: <http://localhost:3000/api/v1>
-- Swagger UI: <http://localhost:3000/docs> (raw spec: `/docs/openapi.json`, source: `openapi.yaml`)
-- Health: <http://localhost:3000/health>
-
-### Using a real MongoDB
+> **CMS token (hardcoded, per the brief): `brianfox-cms-token`**
+>
+> Send it on every `/api/v1/cms/*` call: `Authorization: Bearer brianfox-cms-token`. Reader endpoints need no token.
 
 ```bash
-docker compose up -d mongo                 # starts only MongoDB 8.2 on localhost:27017
-cp .env.example .env                      # then set MONGODB_URI=mongodb://localhost:27017/blogcms
-npm run dev
+npm install && npm run dev
 ```
 
-Optional sample data, from a **second terminal** (the dev server keeps the first one busy). The seed
-**replaces all posts** in the target database, so running it twice gives the same result:
-
-```bash
-npm run seed
-```
-
-As a safety net, the seed refuses to run when `NODE_ENV=production` unless `SEED_FORCE=1` is set.
-
-### Production build
-
-```bash
-npm run build && MONGODB_URI=... CMS_API_TOKEN=... NODE_ENV=production npm start
-```
-
-In any environment other than `development`, `MONGODB_URI` is required.
-
-### Docker (API + MongoDB)
+With no `MONGODB_URI`, the dev server starts an **in-memory MongoDB** (`mongodb-memory-server`): zero setup, data is lost on restart.
+The first run downloads a `mongod` binary, so it needs internet once. Alternative with a real, persistent MongoDB:
 
 ```bash
 docker compose up --build
 ```
 
-Starts MongoDB and the API on <http://localhost:3000> (docs at `/docs`). The API container waits until
-MongoDB passes its healthcheck (`depends_on: condition: service_healthy`) and runs with `NODE_ENV=production`,
-`MONGODB_URI=mongodb://mongo:27017/blogcms`, `PORT=3000` and `CMS_API_TOKEN` (default `brianfox-cms-token`;
-override it from the shell or a `.env` file next to `docker-compose.yml`). Data lives in the `mongo-data` volume.
+| What                | Where                                                                                                                                     |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| API                 | <http://localhost:3000/api/v1>                                                                                                            |
+| Swagger UI          | <http://localhost:3000/docs> (raw spec at `/docs/openapi.json`, source: [`openapi.yaml`](openapi.yaml))                                   |
+| Ready-made requests | [`requests.http`](requests.http) (VS Code REST Client; every endpoint, happy path and error cases)                                        |
+| Health              | <http://localhost:3000/health> (`503` when the database is down)                                                                          |
+| Sample data         | `npm run seed` from a second terminal (needs `MONGODB_URI`; **replaces all posts**; refuses `NODE_ENV=production` without `SEED_FORCE=1`) |
 
-The `Dockerfile` is multi-stage (build with dev dependencies, then a `node:22-alpine` runtime with production
-dependencies only), runs as the non-root `node` user as `node dist/server.js`, and has a `HEALTHCHECK` on `/health`.
-The image does not contain `tsx`, so to load sample data run `npm run seed` from the host with
-`MONGODB_URI=mongodb://localhost:27017/blogcms` (the compose file publishes MongoDB on port 27017).
+To use a real MongoDB with `npm run dev`: `docker compose up -d mongo`, then `cp .env.example .env` and set `MONGODB_URI=mongodb://localhost:27017/blogcms`.
+Outside `development`, `MONGODB_URI` is mandatory. Production build: `npm run build && MONGODB_URI=... CMS_API_TOKEN=... NODE_ENV=production npm start`.
 
-The image is built and smoke-tested by CI on every push (the `docker` job in `.github/workflows/ci.yml`): `docker compose up --build --wait`, then `scripts/smoke.sh` (health, create, publish, list).
+## Requirements to implementation
 
-## Authentication (CMS)
+| Brief item                                                   | Endpoint                                        | Implemented in                                                                                                                                                                           | Proven by                                                                                                                      |
+| ------------------------------------------------------------ | ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| List public posts                                            | `GET /api/v1/posts`                             | [`listPublished`](src/modules/posts/post.service.ts) (filter `status: published`, newest first)                                                                                          | [`posts.test.ts`](test/integration/posts.test.ts): "lists only published posts, newest publishedAt first"                      |
+| Create a post: title, body, hashtags, status (default draft) | `POST /api/v1/cms/posts`                        | [`createPostBody`](src/modules/posts/post.schema.ts) (zod) and [`create`](src/modules/posts/post.service.ts)                                                                             | `posts.test.ts`: "creates a draft authored by Brian Fox...", hashtag normalization, `publishedAt` when created as published    |
+| Author always "Brian Fox"                                    | (same)                                          | [`POST_AUTHOR`](src/modules/posts/post.model.ts) as an `immutable` schema default; a client-sent `author` is stripped; `PATCH` is strict                                                 | same test (author ignored on create); "rejects author with 400" (`PATCH`, same file)                                           |
+| Publish a post                                               | `POST /api/v1/cms/posts/:id/publish`            | [`publish`](src/modules/posts/post.service.ts): conditional atomic `findOneAndUpdate` on `status: draft`                                                                                 | `posts.test.ts`: "publishes a draft...", "is idempotent..."                                                                    |
+| Delete a post                                                | `DELETE /api/v1/cms/posts/:id`                  | [`remove`](src/modules/posts/post.service.ts), `204` then `404`                                                                                                                          | `posts.test.ts`: "deletes with 204, then 404"                                                                                  |
+| Readers filter by hashtag                                    | `GET /api/v1/posts?hashtags=a,b&match=any\|all` | [`hashtagFilter`](src/modules/posts/post.service.ts) (`$in` / `$all`) and [`hashtagsQuery`](src/modules/posts/post.schema.ts)                                                            | `posts.test.ts`: "filters by hashtag with match=any... and match=all..."; `regressions.test.ts`: repeated `hashtags` parameter |
+| No auth system: hardcoded token, documented                  | all `/api/v1/cms/*`                             | [`requireBearerToken`](src/middlewares/auth.ts), default in [`env.ts`](src/config/env.ts) (`DEFAULT_CMS_API_TOKEN`); documented here, in `openapi.yaml`, `requests.http`, `.env.example` | `posts.test.ts`: "authentication on CMS routes" (401 on every CMS route and on malformed credentials; readers need no token)   |
 
-All `/api/v1/cms/*` endpoints need the header:
+## Implicit requirements we handled
 
-```
-Authorization: Bearer brianfox-cms-token
-```
+| Requirement                       | What the code does                                                                                                                                                                                                                                                      | Why                                                                                     |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| Drafts invisible to readers       | Reader list and get-by-id filter on `status: published`; a draft id answers `404`, not `403`                                                                                                                                                                            | A `403` would confirm the draft exists                                                  |
+| Author enforced server-side       | `immutable` model default; ignored on create, rejected (`400`) on `PATCH`                                                                                                                                                                                               | The client must not be able to forge authorship                                         |
+| Hashtag normalization             | NFC, trim, strip leading `#`, lowercase, de-duplicate ([`hashtags.ts`](src/modules/posts/hashtags.ts)); 1-50 letters/digits/underscore, max 20 per post. The same function normalizes reader filters                                                                    | `#NodeJS`, `nodejs` and a decomposed `città` are one tag, for storage and for filtering |
+| Any/all matching                  | `match=any` (default) uses `$in`, `match=all` uses `$all`                                                                                                                                                                                                               | Readers need both "one of" and "all of" semantics                                       |
+| Pagination with meta              | `page`, `limit` (default 10, capped at 100) on both lists; response has `meta: { page, limit, total, totalPages }`; sort is deterministic (`_id` tie-break)                                                                                                             | Unbounded lists do not scale; stable pages need a total order                           |
+| Validation, one error shape       | zod on params, query and body; all problems reported together as `400 VALIDATION_ERROR` with `details[]`. Every error is `{ error: { code, message, requestId?, details? } }`; stack traces only in development                                                         | Clients write one error handler; nothing internal leaks                                 |
+| Idempotent publish/unpublish      | Already-published post returned untouched (`publishedAt` kept); an existing draft is returned untouched on unpublish                                                                                                                                                    | Safe to retry; concurrent calls cannot overwrite the date                               |
+| `404` for malformed ids           | Id is checked in the service (`assertValidId`), not in zod, so it is `404`, never a `CastError`/`500` or a `400`. Invalid percent-encoding in the path (`/posts/%zz`) is `404` too                                                                                      | A malformed id cannot match any post: same answer as "no such post"                     |
+| `415` and `413`                   | `requireJson` returns `415` for a non-JSON body on `POST`/`PATCH`; the body parser answers `415` for an unsupported `Content-Encoding` and `413` above `BODY_LIMIT` (100kb); a `POST` without a body is a `400` validation error; other framework 4xx keep their status | Reject early with the right code instead of a confusing `400`/`500`                     |
+| Rate limiting                     | `express-rate-limit`, per IP, fixed window: 120/min public, 300/min CMS (counted apart, CMS limiter runs before auth so token guessing is throttled); `429` with `RateLimit-*` and `Retry-After`; `/health` and `/docs` are exempt                                      | Basic abuse protection                                                                  |
+| Request ids                       | `X-Request-Id` reused if well-formed (up to 128 of `A-Za-z0-9_.:-`), otherwise a UUID; in the response header, every log line and `error.requestId`                                                                                                                     | A client report can be matched to the server logs                                       |
+| ETag / 304, `no-store` on the CMS | Public reads: `Cache-Control: public, no-cache` + weak `ETag`, `If-None-Match` gets `304`. CMS responses and every error: `no-store` and no `ETag`                                                                                                                      | Cheap revalidation for readers; drafts and authenticated data are never cached          |
+| Token redaction in logs           | pino `redact`: `Authorization` and `Cookie` request headers and `Set-Cookie` response header logged as `[REDACTED]`                                                                                                                                                     | Credentials must not end up in log storage                                              |
+| Constant-time token compare       | SHA-256 of both values, then `timingSafeEqual` ([`safeEqual`](src/middlewares/auth.ts))                                                                                                                                                                                 | No timing side channel; hashing equalizes lengths                                       |
+| Indexes matching the sorts        | `{status, publishedAt, _id}` (reader list), `{createdAt, _id}` (CMS list), `{hashtags}` (multikey filter) in [`post.model.ts`](src/modules/posts/post.model.ts)                                                                                                         | Lists are served from an index, not an in-memory sort                                   |
+| Graceful shutdown                 | `SIGINT`/`SIGTERM`: stop accepting connections, close the DB, exit; forced exit after 10 s ([`server.ts`](src/server.ts))                                                                                                                                               | No dropped in-flight requests on deploy; works with `docker stop`                       |
+| Docker smoke-tested in CI         | Multi-stage image, non-root user, `HEALTHCHECK`; the `docker` CI job runs `compose up --build --wait` and [`scripts/smoke.sh`](scripts/smoke.sh) (health, create, publish, list)                                                                                        | The container is proven to work, not just to build                                      |
+| Also                              | Env validated at startup (fail fast); `helmet`; configurable `CORS_ORIGIN`; `X-Powered-By` off; `/health` returns `503` when the DB is down; Express 5 forwards async errors, so no `asyncHandler`                                                                      | Security and operability basics                                                         |
 
-**The token is hardcoded by design (per the brief): `brianfox-cms-token`.** It can be overridden with the
-`CMS_API_TOKEN` environment variable. Missing/invalid token gives `401` with a
-`WWW-Authenticate: Bearer realm="BlogCMS"` header. The comparison is constant-time (SHA-256 digests
-compared with `timingSafeEqual`). Reader endpoints are public.
+## API overview
 
-## Brief requirements mapped to endpoints
+Details, schemas and examples: **Swagger UI at `/docs`** and [`openapi.yaml`](openapi.yaml). Success: `{ "data": Post }` or `{ "data": Post[], "meta": {...} }`.
 
-| Brief item                                                                             | Endpoint                                        |
-| -------------------------------------------------------------------------------------- | ----------------------------------------------- |
-| List public posts (readers)                                                            | `GET /api/v1/posts`                             |
-| Create post (title, body, hashtags, status default `draft`, author always "Brian Fox") | `POST /api/v1/cms/posts`                        |
-| Publish a post                                                                         | `POST /api/v1/cms/posts/:id/publish`            |
-| Delete a post                                                                          | `DELETE /api/v1/cms/posts/:id`                  |
-| Readers filter by hashtag                                                              | `GET /api/v1/posts?hashtags=a,b&match=any\|all` |
-| Hardcoded bearer token on CMS calls                                                    | `Authorization: Bearer brianfox-cms-token`      |
+| Method   | Path                              | Auth   | Description                                                                          | Main status codes            |
+| -------- | --------------------------------- | ------ | ------------------------------------------------------------------------------------ | ---------------------------- |
+| `GET`    | `/api/v1/posts`                   | none   | Published posts. Query: `hashtags`, `match` (`any`/`all`), `page`, `limit`           | 200, 304, 400, 429           |
+| `GET`    | `/api/v1/posts/:id`               | none   | One published post (a draft is `404`)                                                | 200, 304, 404                |
+| `GET`    | `/api/v1/cms/posts`               | Bearer | All posts, drafts included. Same query plus `status` (`draft`/`published`)           | 200, 400, 401                |
+| `GET`    | `/api/v1/cms/posts/:id`           | Bearer | One post, any status                                                                 | 200, 401, 404                |
+| `POST`   | `/api/v1/cms/posts`               | Bearer | Create (`title`, `body`, `hashtags?`, `status?` default `draft`); `Location` header  | 201, 400, 401, 413, 415      |
+| `PATCH`  | `/api/v1/cms/posts/:id`           | Bearer | Edit `title`, `body`, `hashtags` only; unknown fields (`status`, `author`) are `400` | 200, 400, 401, 404, 413, 415 |
+| `POST`   | `/api/v1/cms/posts/:id/publish`   | Bearer | Draft to published, sets `publishedAt` (idempotent)                                  | 200, 401, 404                |
+| `POST`   | `/api/v1/cms/posts/:id/unpublish` | Bearer | Back to draft, `publishedAt: null` (idempotent)                                      | 200, 401, 404                |
+| `DELETE` | `/api/v1/cms/posts/:id`           | Bearer | Delete                                                                               | 204, 401, 404                |
+| `GET`    | `/health`                         | none   | Liveness and DB state                                                                | 200, 503                     |
 
-A ready-made request collection (every endpoint, happy path and error cases) is in
-[`requests.http`](requests.http) for the VS Code REST Client extension (JetBrains HTTP Client can read it too, but
-request chaining of the post id is REST Client only).
-
-Additional endpoints (implicit requirements): `GET /api/v1/posts/:id`, `GET /api/v1/cms/posts`,
-`GET /api/v1/cms/posts/:id`, `PATCH /api/v1/cms/posts/:id`, `POST /api/v1/cms/posts/:id/unpublish`, `GET /health`.
-
-## API reference
-
-Success responses wrap the payload: `{ "data": Post }` or `{ "data": Post[], "meta": { page, limit, total, totalPages } }`.
-Errors always look like `{ "error": { "code", "message", "details?" } }`.
-
-Post:
-
-```json
-{
-  "id": "66f1c0a2b3c4d5e6f7a8b9c0",
-  "title": "Hello",
-  "body": "World",
-  "hashtags": ["nodejs"],
-  "status": "draft",
-  "author": "Brian Fox",
-  "publishedAt": null,
-  "createdAt": "2026-11-04T10:00:00.000Z",
-  "updatedAt": "2026-11-04T10:00:00.000Z"
-}
-```
-
-### curl examples
+A literal `#` in a URL must be sent as `%23` (a raw `#` starts the URL fragment and never reaches the server): `?hashtags=%23NodeJS`.
 
 ```bash
-TOKEN=brianfox-cms-token
-BASE=http://localhost:3000
+TOKEN=brianfox-cms-token; BASE=http://localhost:3000
 
-# Health
-curl $BASE/health
-
-# CMS: create a draft (201 + Location header)
+# Create (draft by default; the id is in the body and in the Location header)
 curl -i -X POST $BASE/api/v1/cms/posts \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"title":"Hello","body":"First post","hashtags":["#NodeJS","typescript"]}'
 
-# CMS: create directly as published
-curl -X POST $BASE/api/v1/cms/posts \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"title":"Live","body":"Already public","status":"published"}'
+# Publish (replace $ID)
+curl -X POST $BASE/api/v1/cms/posts/$ID/publish -H "Authorization: Bearer $TOKEN"
 
-# CMS: list everything (drafts included), optionally ?status=draft&hashtags=nodejs&page=1&limit=10
-curl "$BASE/api/v1/cms/posts?status=draft" -H "Authorization: Bearer $TOKEN"
-
-# CMS: get one / update / publish / unpublish / delete   (replace $ID)
-curl $BASE/api/v1/cms/posts/$ID -H "Authorization: Bearer $TOKEN"
-curl -X PATCH $BASE/api/v1/cms/posts/$ID \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"title":"New title","hashtags":["updated"]}'
-curl -X POST $BASE/api/v1/cms/posts/$ID/publish   -H "Authorization: Bearer $TOKEN"
-curl -X POST $BASE/api/v1/cms/posts/$ID/unpublish -H "Authorization: Bearer $TOKEN"
-curl -i -X DELETE $BASE/api/v1/cms/posts/$ID      -H "Authorization: Bearer $TOKEN"   # 204
-
-# Readers: published posts only
-curl "$BASE/api/v1/posts"
+# Readers: filter by hashtags, posts having all of them
 curl "$BASE/api/v1/posts?hashtags=nodejs,typescript&match=all&page=1&limit=5"
-curl "$BASE/api/v1/posts?hashtags=%23NodeJS"   # a literal # must be sent as %23
-curl $BASE/api/v1/posts/$ID
 ```
 
-Query parameters of the list endpoints:
+## Architecture
 
-| Param      | Meaning                                                                                                                                                                                                                               |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `hashtags` | Comma-separated (or repeated). Normalized like stored tags, so `#NodeJS` equals `nodejs`. In a URL write the hash as `%23` (a raw `#` starts the URL fragment and is never sent to the server, so the filter would be silently lost). |
-| `match`    | `any` (default): has at least one of the tags. `all`: has every tag.                                                                                                                                                                  |
-| `page`     | 1-based, default 1.                                                                                                                                                                                                                   |
-| `limit`    | Default 10, **capped at 100** (a larger value is reduced to 100; `meta.limit` shows the effective value).                                                                                                                             |
-| `status`   | CMS list only: `draft` or `published`.                                                                                                                                                                                                |
+Order below is the real mount order in [`src/app.ts`](src/app.ts) and the routers in [`post.routes.ts`](src/modules/posts/post.routes.ts). The JSON body parser is mounted per CMS route, after rate limiting and auth, so a request without a valid token gets `401` (and counts against the limiter) even with a malformed or oversized body.
 
-## Design decisions and implicit requirements handled
+```mermaid
+flowchart TD
+    C([Client]) --> RID[requestId]
+    RID --> LOG[pino-http logger]
+    LOG --> DOCS{{"/docs: Swagger UI, mounted before helmet"}}
+    LOG --> HEL[helmet]
+    HEL --> CORS[cors]
+    CORS --> HEALTH["GET /health"]
+    CORS --> PUB["/api/v1/posts: rate limit (public), Cache-Control + ETag"]
+    CORS --> CMS["/api/v1/cms/posts: no-store, rate limit (cms), auth (bearer token)"]
+    CORS --> NF[notFound: unknown routes]
+    PUB --> VAL1[validate: zod]
+    CMS --> RJ["requireJson (POST, PATCH)"]
+    RJ --> JB["json parser (BODY_LIMIT): 400 malformed, 413, 415 encoding"]
+    JB --> VAL2[validate: zod]
+    CMS -. "GET / DELETE / publish / unpublish" .-> VAL2
+    VAL1 --> CTRL[controller: HTTP only]
+    VAL2 --> CTRL
+    CTRL --> SVC[service: business rules]
+    SVC --> MODEL[Mongoose model]
+    MODEL --> DB[(MongoDB)]
+    NF --> EH
+    VAL1 -. error .-> EH
+    VAL2 -. error .-> EH
+    JB -. error .-> EH
+    CMS -. "401 / 429" .-> EH
+    SVC -. "ApiError / unexpected" .-> EH[errorHandler: one JSON error shape]
+    EH --> C
+```
 
-- **Layered architecture**: routes -> controller (HTTP only) -> service (business rules) -> Mongoose model.
-  Cross-cutting concerns are middlewares (`auth`, `validate`, `requireJson`, `notFound`, `errorHandler`).
-  `app.ts` builds the app without listening (used by tests); `server.ts` wires DB, listening and graceful shutdown.
-- **Validation with zod** on params, query and body; all problems are returned together as
-  `400 VALIDATION_ERROR` with `details: [{ location, path, message }]`.
-- **Drafts are never visible to readers**: list and get-by-id filter on `status: published`. A draft id
-  returns `404` (not `403`) so its existence is not leaked.
-- **Author is server-controlled**: always "Brian Fox", `immutable` in the model. On create, a client-supplied
-  `author` is **ignored** (unknown keys are stripped). On `PATCH` the schema is **strict**, so `author` or `status`
-  are rejected with `400` instead of being silently dropped.
-- **Hashtag normalization** (Unicode NFC, trim, strip leading `#`, lowercase, de-duplicate), validation
-  (letters/numbers/underscore, 1-50 chars, max 20 per post) and the _same_ normalization for reader filters.
-- **Publishing**: `publishedAt` is set on publish (or on create with `status: "published"`).
-  Publish is **idempotent** (200, `publishedAt` unchanged) and implemented as a conditional atomic update,
-  so concurrent calls cannot overwrite the date. `unpublish` returns the post to draft with `publishedAt: null` and is idempotent in the same way
-  (an existing draft is returned untouched, `updatedAt` included).
-- **Status changes only through publish/unpublish**; `PATCH` edits title/body/hashtags only.
-- **Malformed ids return 404** everywhere (a malformed id cannot match any post); this avoids a CastError/500
-  and treats all "no such post" cases uniformly. This includes invalid percent-encoding in the path
-  (e.g. `/posts/%zz`), which also returns 404 rather than 500.
-- **Pagination** on both list endpoints with `meta`; deterministic ordering (`publishedAt desc, _id desc`).
-- **Indexes**: `{ status, publishedAt, _id }` (reader list sort), `{ createdAt, _id }` (CMS list sort) and
-  `{ hashtags }` (multikey, for filtering).
-- **Consistent errors**: 400 (validation, malformed JSON), 401 (+`WWW-Authenticate`), 404 (also unknown routes),
-  413 (body too large), 415 (body that is not JSON, or an unsupported `Content-Encoding`), 500. Any other 4xx
-  raised by the framework keeps its status instead of becoming a 500. Stack traces are never returned outside `development`; unexpected errors are logged server-side.
-- **Security basics**: `helmet`, configurable `CORS_ORIGIN`, JSON body size limit (`BODY_LIMIT`, default 100kb),
-  constant-time token check, env validated at startup (fail fast), and **credentials are redacted from the logs**
-  (`Authorization` and `Cookie` request headers are logged as `[REDACTED]`); `X-Powered-By` is disabled.
-- **Ops**: `/health` (503 when the DB is down), structured logging with pino, graceful shutdown on SIGINT/SIGTERM,
-  OpenAPI docs.
-- **Express 5** forwards rejected promises from async handlers to the error middleware, so no `asyncHandler`
-  wrapper is needed.
-- **Response envelope**: `{ data }` / `{ data, meta }` rather than bare arrays, so metadata can grow without breaking clients.
-- **Rate limiting** (`express-rate-limit`): per client IP, fixed window (default 120 requests/min on public reader
-  routes, 300/min on CMS routes, counted separately; the CMS limiter runs before the auth check so token guessing is
-  throttled too). `/health` and `/docs` are not limited. Responses carry the standard `RateLimit-Limit`,
-  `RateLimit-Remaining` and `RateLimit-Reset` headers; past the limit the API answers `429` with `Retry-After` and the
-  usual error JSON (`code: TOO_MANY_REQUESTS`). The counters are in memory, so with several API instances each one counts alone.
-  **Behind a reverse proxy or load balancer set `TRUST_PROXY`** (e.g. `1` for one hop), otherwise every client shares
-  the proxy's IP and one limit; never set it to `true` on a server that is directly reachable, because clients could then
-  spoof `X-Forwarded-For` and dodge the limit. The value must match the real deployment (number of proxies in front of the API); express-rate-limit logs a validation error when it does not.
-- **Request id**: an incoming `X-Request-Id` (up to 128 characters of `A-Za-z0-9_.:-`) is reused, otherwise a UUID is
-  generated. It is returned in the `X-Request-Id` response header, attached to every log line (pino-http) and repeated as
-  `error.requestId` in error responses, so a client report can be matched to the server logs.
-- **HTTP caching**: public reads send `Cache-Control: public, no-cache` and a weak `ETag`: caches must revalidate, and a conditional request with
-  `If-None-Match` gets `304 Not Modified` without a body, so changes are visible immediately. Setting `PUBLIC_CACHE_MAX_AGE=N` (seconds)
-  switches to `public, max-age=N`; then a published, edited or deleted post can take up to N seconds to show up for clients that cache.
-  CMS responses are `Cache-Control: no-store`, and so are all error responses.
-- **Scope**: no real user accounts or full-text search (out of the brief).
+```
+src/
+  app.ts                   builds the Express app without listening (tests drive it with Supertest)
+  server.ts                DB init, listen, graceful shutdown
+  config/env.ts            environment parsing and validation (zod), fail fast
+  db/index.ts              connect/disconnect, in-memory fallback in development
+  middlewares/             requestId, auth, rateLimit, cacheControl, requireJson, jsonBody, validate, notFound, errorHandler
+  modules/posts/           post.routes, post.controller, post.service, post.model, post.schema, hashtags
+  docs/swagger.ts          serves openapi.yaml at /docs
+  utils/                   ApiError, logger
+  scripts/seed.ts
+test/                      unit/ and integration/ (Vitest, Supertest, in-memory MongoDB)
+openapi.yaml, requests.http, Dockerfile, docker-compose.yml, scripts/smoke.sh
+```
+
+Layering rules:
+
+- **Controllers are thin**: read validated input, call one service function, set the HTTP status and headers. No business logic, no Mongoose.
+- **Services own the business rules**: draft visibility, idempotent publish, id checks, filters, pagination. They throw `ApiError`; they know nothing about HTTP objects.
+- **zod schemas live at the edge**: `validate` parses params, query and body before the controller runs and hands over typed, normalized values.
+- **Cross-cutting concerns are middlewares**; `errorHandler` is the only place that turns an error into a response.
+
+## Design decisions and trade-offs
+
+- **Drafts return 404, not 403 to readers**: a `403` leaks that the id exists. Alternative: `403`, simpler to debug but informative to an attacker.
+- **Strip on create, strict on PATCH**: a client-sent `author` on create is ignored (the server owns it; harmless), while `PATCH` rejects `author`/`status` with `400` so a silent no-op cannot hide a client bug; status changes go through publish/unpublish. Alternative: strict everywhere, or strip everywhere.
+- **Cap `limit` instead of rejecting it**: `limit=1000` becomes 100 and `meta.limit` shows the effective value; clients keep working. Invalid values (`0`, `abc`) are still `400`. Alternative: `400` on anything above 100.
+- **`no-cache` + ETag instead of `max-age`**: a publish or delete is visible immediately and revalidation is a cheap `304`. `PUBLIC_CACHE_MAX_AGE=N` switches to `max-age=N` when staleness is acceptable. Alternative: a default `max-age`, faster but stale.
+- **In-memory MongoDB only in development**: zero-setup review; outside `development` the app refuses to start without `MONGODB_URI` so data is never silently lost. `mongodb-memory-server` is a devDependency, imported dynamically, and absent from the image.
+- **A single hardcoded token**: the brief asks for no auth system; it is compared in constant time, overridable via `CMS_API_TOKEN`, and the server warns when the default is in use. Alternative: JWT with users and roles (see "What I'd do next").
+- **No repository layer**: services use Mongoose directly; one model does not justify another abstraction. Alternative: repository interface, useful if the store changes.
+- **MongoDB pinned to 8.2.6** (compose and CI): newer images refuse to start on Linux kernel 6.19+, which includes the 7.0 kernel of the `ubuntu-latest` runner.
 
 ## Configuration
+
+All variables are optional; copy [`.env.example`](.env.example) to `.env` to customize. Invalid values stop the server at startup with a readable message.
 
 | Variable                | Default              | Description                                                       |
 | ----------------------- | -------------------- | ----------------------------------------------------------------- |
@@ -234,46 +190,50 @@ Query parameters of the list endpoints:
 | `RATE_LIMIT_CMS_MAX`    | `300`                | Requests per window per IP on CMS routes                          |
 | `PUBLIC_CACHE_MAX_AGE`  | `0`                  | `max-age` (seconds) of public GETs; `0` = `public, no-cache`      |
 
-## Scripts
+Behind a reverse proxy or load balancer set `TRUST_PROXY` (e.g. `1`), otherwise all clients share the proxy IP and one rate limit.
+Never set it to `true` on a directly reachable server: clients could spoof `X-Forwarded-For`. Rate-limit counters are in memory, so each instance counts alone.
 
-| Command                           | Description                                          |
-| --------------------------------- | ---------------------------------------------------- |
-| `npm run dev`                     | Dev server with reload (tsx)                         |
-| `npm run build` / `npm start`     | Compile to `dist/` / run compiled server             |
-| `npm test`                        | Vitest: unit + integration tests                     |
-| `npm run lint` / `npm run format` | ESLint / Prettier (`npm run format:check` verifies)  |
-| `npm run typecheck`               | `tsc --noEmit` (includes tests)                      |
-| `npm run seed`                    | Replace all posts with samples (needs `MONGODB_URI`) |
+With Docker, compose sets `NODE_ENV=production`, `MONGODB_URI=mongodb://mongo:27017/blogcms` and `CMS_API_TOKEN` (default `brianfox-cms-token`, overridable from the shell or a `.env` next to `docker-compose.yml`).
+The API waits for the MongoDB healthcheck; data lives in the `mongo-data` volume. The image has no `tsx`, so run `npm run seed` from the host against `mongodb://localhost:27017/blogcms`.
 
-## Testing
+## Testing and quality
 
 ```bash
 npm test
 ```
 
-Integration tests (Supertest against the real Express app) run on an in-memory MongoDB started once by Vitest's
-`globalSetup`; each test file uses its own database. They cover creation defaults and author enforcement,
-hashtag normalization, validation errors, 401 on every CMS route, draft visibility, publish/unpublish and
-idempotency, hashtag filtering (`any`/`all`), pagination, invalid/missing ids, delete, unknown routes, malformed
-JSON, body limits and the 500 error shape. Unit tests (`test/unit`) cover hashtag normalization (including Unicode), environment parsing (`loadEnv`) and
-the database bootstrap guard (`initDatabase`). `test/integration/http.test.ts` covers request ids, `Cache-Control`/ETag/304 and the 429 rate limit (tests run with a very high limit; the 429 test builds an app with a low one). Integration tests (`test/integration`) are split into `posts`
-(main API behaviour), `logging` (credentials are redacted from logs) and `regressions` (framework-level 4xx errors,
-415, idempotent unpublish, repeated hashtag filters).
+**92 tests** (Vitest + Supertest on the real Express app; mongod started once by `globalSetup`, one database per test file):
 
-## Project layout
+| File                                                                      | Tests | Covers                                                                                                                                                                                                                                                                                                    |
+| ------------------------------------------------------------------------- | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`integration/posts.test.ts`](test/integration/posts.test.ts)             | 52    | Create defaults and author, normalization, validation, malformed JSON, `413`, `401` on every CMS route (also before the body is read, even with a declared but unsent body), draft visibility, hashtag filters, pagination, PATCH, publish/unpublish, delete, health, unknown routes, OpenAPI, safe `500` |
+| [`integration/http.test.ts`](test/integration/http.test.ts)               | 11    | Request ids, `Cache-Control`/ETag/`304`/`max-age`, `no-store` and no ETag on CMS, `no-store` on errors, `429` and `RateLimit-*` headers, separate public/CMS counters                                                                                                                                     |
+| [`integration/regressions.test.ts`](test/integration/regressions.test.ts) | 8     | Bad percent-encoding, corrupt gzip, unknown `Content-Encoding` (`415`), non-JSON `Content-Type` (`415`), idempotent unpublish, repeated `hashtags`, CMS hashtag filter, no `X-Powered-By`                                                                                                                 |
+| [`integration/logging.test.ts`](test/integration/logging.test.ts)         | 1     | The bearer token never appears in the logs                                                                                                                                                                                                                                                                |
+| [`unit/hashtags.test.ts`](test/unit/hashtags.test.ts)                     | 11    | Normalization, de-duplication, Unicode NFC/NFD, validity rules                                                                                                                                                                                                                                            |
+| [`unit/env.test.ts`](test/unit/env.test.ts)                               | 8     | Defaults, empty strings, invalid values, `TRUST_PROXY`, rate-limit and cache settings                                                                                                                                                                                                                     |
+| [`unit/db.test.ts`](test/unit/db.test.ts)                                 | 1     | No in-memory fallback outside development                                                                                                                                                                                                                                                                 |
 
-```
-src/
-  config/env.ts            env parsing (zod)
-  db/index.ts              connect/disconnect, in-memory fallback
-  middlewares/             auth, validate, requireJson, requestId, rateLimit, cacheControl, notFound, errorHandler
-  modules/posts/           model, zod schemas, service, controller, routes, hashtag helpers
-  docs/swagger.ts          serves openapi.yaml at /docs
-  utils/                   ApiError, logger
-  scripts/seed.ts
-  app.ts / server.ts
-test/                      unit + integration
-openapi.yaml
-requests.http              REST Client / HTTP Client request collection
-Dockerfile, docker-compose.yml, .dockerignore
-```
+**CI** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml), on push and pull request to `main`):
+
+- **`verify`**: `npm ci`, ESLint, `tsc --noEmit` (tests included), Prettier check, tests (mongod 8.2.6, cached), build.
+- **`docker`**: `docker compose up -d --build --wait`, then [`scripts/smoke.sh`](scripts/smoke.sh) (health, create, publish, filtered list); dumps compose diagnostics on failure and tears the stack down.
+
+## Project scripts
+
+| Command                           | Description                                          |
+| --------------------------------- | ---------------------------------------------------- |
+| `npm run dev`                     | Dev server with reload (tsx)                         |
+| `npm run build` / `npm start`     | Compile to `dist/` / run the compiled server         |
+| `npm test`                        | Vitest: unit + integration tests                     |
+| `npm run lint` / `npm run format` | ESLint / Prettier (`npm run format:check` verifies)  |
+| `npm run typecheck`               | `tsc --noEmit` (includes tests)                      |
+| `npm run seed`                    | Replace all posts with samples (needs `MONGODB_URI`) |
+
+## What I'd do next
+
+- **Real authentication and roles**: per-user credentials or JWT instead of one shared token, so the author is the authenticated user rather than a constant.
+- **Search and slugs**: a text index (or Atlas Search) for full-text search, and a unique slug per post for readable URLs.
+- **Shared rate-limit store**: Redis behind `express-rate-limit`, so limits hold across several API instances.
+- **Cursor pagination**: `skip`/`limit` gets slower on deep pages; a cursor on `(publishedAt, _id)` would stay constant.
+- **Observability**: metrics and a readiness probe separate from liveness, and a CORS allow-list by default instead of `*`.
