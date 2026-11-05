@@ -410,7 +410,8 @@ components:
               type: string
               example: VALIDATION_ERROR
             message: { type: string }
-            details: {}
+            details:
+              description: Validation problems (array of { location, path, message }). On an unexpected 500 in development only, { stack }.
             requestId: { type: string, description: Same value as the X-Request-Id response header }
     Health:
       type: object

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { jsonBody } from '../../middlewares/jsonBody.js';
 import { requireJson } from '../../middlewares/requireJson.js';
 import { validate } from '../../middlewares/validate.js';
 import * as controller from './post.controller.js';
@@ -19,11 +20,18 @@ publicPostsRouter.get('/:id', validate({ params: postIdParams }), controller.get
 export const cmsPostsRouter = Router();
 const withId = validate({ params: postIdParams });
 cmsPostsRouter.get('/', validate({ query: listCmsPostsQuery }), controller.listCmsPosts);
-cmsPostsRouter.post('/', requireJson, validate({ body: createPostBody }), controller.createPost);
+cmsPostsRouter.post(
+  '/',
+  requireJson,
+  jsonBody,
+  validate({ body: createPostBody }),
+  controller.createPost,
+);
 cmsPostsRouter.get('/:id', withId, controller.getCmsPost);
 cmsPostsRouter.patch(
   '/:id',
   requireJson,
+  jsonBody,
   validate({ params: postIdParams, body: updatePostBody }),
   controller.updatePost,
 );

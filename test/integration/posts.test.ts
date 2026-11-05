@@ -1,4 +1,8 @@
+import { once } from 'node:events';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import mongoose from 'mongoose';
+import { createApp } from '../../src/app.js';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { Post } from '../../src/modules/posts/post.model.js';
 import { api, auth, createPost, setupDb, teardownDb } from '../helpers.js';
@@ -136,6 +140,41 @@ describe('authentication on CMS routes', () => {
 
   it('does not require a token for reader endpoints', async () => {
     expect((await api().get('/api/v1/posts')).status).toBe(200);
+  });
+
+  it('answers 401 before reading the body when the token is missing', async () => {
+    const malformed = await api()
+      .post('/api/v1/cms/posts')
+      .set('Content-Type', 'application/json')
+      .send('{"title": ');
+    expect(malformed.status).toBe(401);
+
+    // The body is declared (Content-Length) but never sent: a 401 proves the server does not
+    // wait for it. Sending a real 200kb body would race the response against the socket reset.
+    const server = createApp().listen(0);
+    try {
+      await once(server, 'listening');
+      const { port } = server.address() as AddressInfo;
+      const status = await new Promise<number>((resolve, reject) => {
+        const req = http.request({
+          port,
+          method: 'POST',
+          path: '/api/v1/cms/posts',
+          headers: { 'Content-Type': 'application/json', 'Content-Length': '200000' },
+        });
+        req.setTimeout(5000, () => req.destroy(new Error('no response')));
+        req.on('response', (res) => {
+          res.resume();
+          resolve(res.statusCode!);
+          req.destroy();
+        });
+        req.on('error', reject);
+        req.flushHeaders();
+      });
+      expect(status).toBe(401);
+    } finally {
+      server.close();
+    }
   });
 });
 

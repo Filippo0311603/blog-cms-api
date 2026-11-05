@@ -40,6 +40,8 @@ export function createApp({
   app.set('trust proxy', env.TRUST_PROXY);
   // Applies to every route, including /docs (helmet is mounted after the docs).
   app.disable('x-powered-by');
+  // ETags are added explicitly to public reads (publicCache); responses that are no-store carry none.
+  app.set('etag', false);
 
   app.use(requestId);
   app.use(pinoHttp({ logger, genReqId }));
@@ -53,7 +55,6 @@ export function createApp({
       origin: env.CORS_ORIGIN === '*' ? '*' : env.CORS_ORIGIN.split(',').map((o) => o.trim()),
     }),
   );
-  app.use(express.json({ limit: env.BODY_LIMIT }));
 
   app.get('/health', (_req, res) => {
     const db = isDbConnected();

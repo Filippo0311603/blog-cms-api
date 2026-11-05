@@ -64,6 +64,15 @@ describe('HTTP caching', () => {
     expect(denied.status).toBe(401);
     expect(denied.headers['cache-control']).toBe('no-store');
   });
+
+  it('sends no ETag on CMS responses', async () => {
+    const post = await createPost({ title: 'Private' });
+    for (const url of ['/api/v1/cms/posts', `/api/v1/cms/posts/${post.id}`]) {
+      const res = await api().get(url).set(auth);
+      expect(res.status).toBe(200);
+      expect(res.headers.etag).toBeUndefined();
+    }
+  });
 });
 
 describe('rate limiting', () => {
