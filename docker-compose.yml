@@ -1,5 +1,5 @@
-# Optional: a real MongoDB for local development.
-#   docker compose up -d
+# docker compose up --build        -> API (http://localhost:3000) + MongoDB
+# docker compose up -d mongo       -> MongoDB only, for `npm run dev` on the host:
 #   MONGODB_URI=mongodb://localhost:27017/blogcms npm run dev
 services:
   mongo:
@@ -10,6 +10,29 @@ services:
       - '27017:27017'
     volumes:
       - mongo-data:/data/db
+    healthcheck:
+      test: ['CMD', 'mongosh', '--quiet', '--eval', "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  api:
+    build: .
+    container_name: blogcms-api
+    restart: unless-stopped
+    init: true
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      MONGODB_URI: mongodb://mongo:27017/blogcms
+      # Override from the shell or a .env file next to this file. Default: the documented test token.
+      CMS_API_TOKEN: ${CMS_API_TOKEN:-brianfox-cms-token}
+    ports:
+      - '3000:3000'
 
 volumes:
   mongo-data:
