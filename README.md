@@ -24,7 +24,7 @@ The first run downloads a `mongod` binary, so it needs internet access once.
 ### Using a real MongoDB
 
 ```bash
-docker compose up -d                      # starts mongo:8 on localhost:27017
+docker compose up -d mongo                 # starts only mongo:8 on localhost:27017
 cp .env.example .env                      # then set MONGODB_URI=mongodb://localhost:27017/blogcms
 npm run dev
 ```
@@ -45,6 +45,24 @@ npm run build && MONGODB_URI=... CMS_API_TOKEN=... NODE_ENV=production npm start
 ```
 
 In any environment other than `development`, `MONGODB_URI` is required.
+
+### Docker (API + MongoDB)
+
+```bash
+docker compose up --build
+```
+
+Starts MongoDB and the API on <http://localhost:3000> (docs at `/docs`). The API container waits until
+MongoDB passes its healthcheck (`depends_on: condition: service_healthy`) and runs with `NODE_ENV=production`,
+`MONGODB_URI=mongodb://mongo:27017/blogcms`, `PORT=3000` and `CMS_API_TOKEN` (default `brianfox-cms-token`;
+override it from the shell or a `.env` file next to `docker-compose.yml`). Data lives in the `mongo-data` volume.
+
+The `Dockerfile` is multi-stage (build with dev dependencies, then a `node:22-alpine` runtime with production
+dependencies only), runs as the non-root `node` user as `node dist/server.js`, and has a `HEALTHCHECK` on `/health`.
+The image does not contain `tsx`, so to load sample data run `npm run seed` from the host with
+`MONGODB_URI=mongodb://localhost:27017/blogcms` (the compose file publishes MongoDB on port 27017).
+
+The image is built and smoke-tested by CI on every push (the `docker` job in `.github/workflows/ci.yml`): `docker compose up --build --wait`, then `scripts/smoke.sh` (health, create, publish, list).
 
 ## Authentication (CMS)
 
@@ -69,6 +87,10 @@ compared with `timingSafeEqual`). Reader endpoints are public.
 | Delete a post                                                                          | `DELETE /api/v1/cms/posts/:id`                  |
 | Readers filter by hashtag                                                              | `GET /api/v1/posts?hashtags=a,b&match=any\|all` |
 | Hardcoded bearer token on CMS calls                                                    | `Authorization: Bearer brianfox-cms-token`      |
+
+A ready-made request collection (every endpoint, happy path and error cases) is in
+[`requests.http`](requests.http) for the VS Code REST Client extension (JetBrains HTTP Client can read it too, but
+request chaining of the post id is REST Client only).
 
 Additional endpoints (implicit requirements): `GET /api/v1/posts/:id`, `GET /api/v1/cms/posts`,
 `GET /api/v1/cms/posts/:id`, `PATCH /api/v1/cms/posts/:id`, `POST /api/v1/cms/posts/:id/unpublish`, `GET /health`.
@@ -178,19 +200,39 @@ Query parameters of the list endpoints:
 - **Express 5** forwards rejected promises from async handlers to the error middleware, so no `asyncHandler`
   wrapper is needed.
 - **Response envelope**: `{ data }` / `{ data, meta }` rather than bare arrays, so metadata can grow without breaking clients.
-- **Scope**: no real user accounts, rate limiting, or full-text search (out of the brief).
+- **Rate limiting** (`express-rate-limit`): per client IP, fixed window (default 120 requests/min on public reader
+  routes, 300/min on CMS routes, counted separately; the CMS limiter runs before the auth check so token guessing is
+  throttled too). `/health` and `/docs` are not limited. Responses carry the standard `RateLimit-Limit`,
+  `RateLimit-Remaining` and `RateLimit-Reset` headers; past the limit the API answers `429` with `Retry-After` and the
+  usual error JSON (`code: TOO_MANY_REQUESTS`). The counters are in memory, so with several API instances each one counts alone.
+  **Behind a reverse proxy or load balancer set `TRUST_PROXY`** (e.g. `1` for one hop), otherwise every client shares
+  the proxy's IP and one limit; never set it to `true` on a server that is directly reachable, because clients could then
+  spoof `X-Forwarded-For` and dodge the limit. The value must match the real deployment (number of proxies in front of the API); express-rate-limit logs a validation error when it does not.
+- **Request id**: an incoming `X-Request-Id` (up to 128 characters of `A-Za-z0-9_.:-`) is reused, otherwise a UUID is
+  generated. It is returned in the `X-Request-Id` response header, attached to every log line (pino-http) and repeated as
+  `error.requestId` in error responses, so a client report can be matched to the server logs.
+- **HTTP caching**: public reads send `Cache-Control: public, no-cache` and a weak `ETag`: caches must revalidate, and a conditional request with
+  `If-None-Match` gets `304 Not Modified` without a body, so changes are visible immediately. Setting `PUBLIC_CACHE_MAX_AGE=N` (seconds)
+  switches to `public, max-age=N`; then a published, edited or deleted post can take up to N seconds to show up for clients that cache.
+  CMS responses are `Cache-Control: no-store`, and so are all error responses.
+- **Scope**: no real user accounts or full-text search (out of the brief).
 
 ## Configuration
 
-| Variable        | Default              | Description                                                   |
-| --------------- | -------------------- | ------------------------------------------------------------- |
-| `NODE_ENV`      | `development`        | `development`, `test` or `production` (empty = development)   |
-| `PORT`          | `3000`               | HTTP port, 1-65535                                            |
-| `MONGODB_URI`   | _(empty)_            | Empty in development = in-memory MongoDB. Required otherwise. |
-| `CMS_API_TOKEN` | `brianfox-cms-token` | Bearer token for CMS routes                                   |
-| `BODY_LIMIT`    | `100kb`              | Max JSON body size                                            |
-| `CORS_ORIGIN`   | `*`                  | `*` or comma-separated origins                                |
-| `LOG_LEVEL`     | `info`               | pino level (`silent` to mute)                                 |
+| Variable                | Default              | Description                                                       |
+| ----------------------- | -------------------- | ----------------------------------------------------------------- |
+| `NODE_ENV`              | `development`        | `development`, `test` or `production` (empty = development)       |
+| `PORT`                  | `3000`               | HTTP port, 1-65535                                                |
+| `MONGODB_URI`           | _(empty)_            | Empty in development = in-memory MongoDB. Required otherwise.     |
+| `CMS_API_TOKEN`         | `brianfox-cms-token` | Bearer token for CMS routes                                       |
+| `BODY_LIMIT`            | `100kb`              | Max JSON body size                                                |
+| `CORS_ORIGIN`           | `*`                  | `*` or comma-separated origins                                    |
+| `LOG_LEVEL`             | `info`               | pino level (`silent` to mute)                                     |
+| `TRUST_PROXY`           | `false`              | Express `trust proxy`: `true`/`false`, hop count, or address list |
+| `RATE_LIMIT_WINDOW_MS`  | `60000`              | Rate limit window in ms                                           |
+| `RATE_LIMIT_PUBLIC_MAX` | `120`                | Requests per window per IP on public reader routes                |
+| `RATE_LIMIT_CMS_MAX`    | `300`                | Requests per window per IP on CMS routes                          |
+| `PUBLIC_CACHE_MAX_AGE`  | `0`                  | `max-age` (seconds) of public GETs; `0` = `public, no-cache`      |
 
 ## Scripts
 
@@ -199,7 +241,7 @@ Query parameters of the list endpoints:
 | `npm run dev`                     | Dev server with reload (tsx)                         |
 | `npm run build` / `npm start`     | Compile to `dist/` / run compiled server             |
 | `npm test`                        | Vitest: unit + integration tests                     |
-| `npm run lint` / `npm run format` | ESLint / Prettier                                    |
+| `npm run lint` / `npm run format` | ESLint / Prettier (`npm run format:check` verifies)  |
 | `npm run typecheck`               | `tsc --noEmit` (includes tests)                      |
 | `npm run seed`                    | Replace all posts with samples (needs `MONGODB_URI`) |
 
@@ -214,7 +256,7 @@ Integration tests (Supertest against the real Express app) run on an in-memory M
 hashtag normalization, validation errors, 401 on every CMS route, draft visibility, publish/unpublish and
 idempotency, hashtag filtering (`any`/`all`), pagination, invalid/missing ids, delete, unknown routes, malformed
 JSON, body limits and the 500 error shape. Unit tests (`test/unit`) cover hashtag normalization (including Unicode), environment parsing (`loadEnv`) and
-the database bootstrap guard (`initDatabase`). Integration tests (`test/integration`) are split into `posts`
+the database bootstrap guard (`initDatabase`). `test/integration/http.test.ts` covers request ids, `Cache-Control`/ETag/304 and the 429 rate limit (tests run with a very high limit; the 429 test builds an app with a low one). Integration tests (`test/integration`) are split into `posts`
 (main API behaviour), `logging` (credentials are redacted from logs) and `regressions` (framework-level 4xx errors,
 415, idempotent unpublish, repeated hashtag filters).
 
@@ -224,7 +266,7 @@ the database bootstrap guard (`initDatabase`). Integration tests (`test/integrat
 src/
   config/env.ts            env parsing (zod)
   db/index.ts              connect/disconnect, in-memory fallback
-  middlewares/             auth, validate, requireJson, notFound, errorHandler
+  middlewares/             auth, validate, requireJson, requestId, rateLimit, cacheControl, notFound, errorHandler
   modules/posts/           model, zod schemas, service, controller, routes, hashtag helpers
   docs/swagger.ts          serves openapi.yaml at /docs
   utils/                   ApiError, logger
@@ -232,4 +274,6 @@ src/
   app.ts / server.ts
 test/                      unit + integration
 openapi.yaml
+requests.http              REST Client / HTTP Client request collection
+Dockerfile, docker-compose.yml, .dockerignore
 ```

@@ -27,4 +27,23 @@ describe('loadEnv', () => {
       expect(() => loadEnv(source)).toThrow(/Invalid environment configuration/);
     },
   );
+
+  it('parses TRUST_PROXY as boolean, hop count or address list', () => {
+    expect(loadEnv({}).TRUST_PROXY).toBe(false);
+    expect(loadEnv({ TRUST_PROXY: 'true' }).TRUST_PROXY).toBe(true);
+    expect(loadEnv({ TRUST_PROXY: '1' }).TRUST_PROXY).toBe(1);
+    expect(loadEnv({ TRUST_PROXY: 'loopback, 10.0.0.0/8' }).TRUST_PROXY).toBe(
+      'loopback, 10.0.0.0/8',
+    );
+  });
+
+  it('has rate limit and cache defaults, and rejects invalid limits', () => {
+    expect(loadEnv({})).toMatchObject({
+      RATE_LIMIT_WINDOW_MS: 60_000,
+      RATE_LIMIT_PUBLIC_MAX: 120,
+      RATE_LIMIT_CMS_MAX: 300,
+      PUBLIC_CACHE_MAX_AGE: 0,
+    });
+    expect(() => loadEnv({ RATE_LIMIT_PUBLIC_MAX: '0' })).toThrow(/Invalid environment/);
+  });
 });

@@ -364,6 +364,7 @@ describe('infrastructure', () => {
       expect(failing.body.error).toEqual({
         code: 'INTERNAL_SERVER_ERROR',
         message: 'Internal server error',
+        requestId: failing.headers['x-request-id'],
       });
     } finally {
       await setupDb();

@@ -1,0 +1,139 @@
+# BlogCMS API requests collection (VS Code "REST Client" extension; also readable in JetBrains HTTP Client).
+#
+# Run the happy path top to bottom: create -> publish -> list -> filter -> delete.
+# Request chaining (`createPost.response...`) is a REST Client feature. In JetBrains, replace
+# the `postId` and `livePostId` values below with the ids returned by "Create a post" and
+# "Create directly as published".
+#
+# Start the API first (`npm run dev` or `docker compose up --build`).
+
+@baseUrl = http://localhost:3000
+@token = brianfox-cms-token
+@postId = {{createPost.response.body.data.id}}
+@livePostId = {{createLive.response.body.data.id}}
+
+### ---------------------------------------------------------------- System
+
+### Health check
+GET {{baseUrl}}/health
+
+### ---------------------------------------------------------------- Happy path
+
+### 1. Create a post (draft by default, author is always "Brian Fox") -> 201 + Location
+# @name createPost
+POST {{baseUrl}}/api/v1/cms/posts
+Authorization: Bearer {{token}}
+Content-Type: application/json
+X-Request-Id: demo-create-1
+
+{
+  "title": "Hello BlogCMS",
+  "body": "My first post",
+  "hashtags": ["#NodeJS", "typescript"]
+}
+
+### 2. Publish it -> 200 (idempotent)
+POST {{baseUrl}}/api/v1/cms/posts/{{postId}}/publish
+Authorization: Bearer {{token}}
+
+### 3. Reader: list published posts -> 200 (try again with If-None-Match for a 304)
+GET {{baseUrl}}/api/v1/posts
+
+### 4. Reader: filter by hashtag, any of the tags (default)
+GET {{baseUrl}}/api/v1/posts?hashtags=nodejs,rust&match=any
+
+### 5. Reader: filter by hashtag, all of the tags
+GET {{baseUrl}}/api/v1/posts?hashtags=nodejs,typescript&match=all
+
+### 6. Reader: a literal # must be sent as %23
+GET {{baseUrl}}/api/v1/posts?hashtags=%23NodeJS
+
+### 7. Reader: get one published post
+GET {{baseUrl}}/api/v1/posts/{{postId}}
+
+### 8. Delete the post -> 204
+DELETE {{baseUrl}}/api/v1/cms/posts/{{postId}}
+Authorization: Bearer {{token}}
+
+### ---------------------------------------------------------------- More CMS calls
+
+### Create directly as published (its id is used by the calls below; post 1 was deleted above)
+# @name createLive
+POST {{baseUrl}}/api/v1/cms/posts
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "title": "Live", "body": "Already public", "status": "published", "hashtags": ["news"] }
+
+### List everything, drafts included (filters: status, hashtags, match, page, limit)
+GET {{baseUrl}}/api/v1/cms/posts?status=draft&page=1&limit=10
+Authorization: Bearer {{token}}
+
+### Get any post, drafts included
+GET {{baseUrl}}/api/v1/cms/posts/{{livePostId}}
+Authorization: Bearer {{token}}
+
+### Update title, body and/or hashtags (status and author cannot be changed here)
+PATCH {{baseUrl}}/api/v1/cms/posts/{{livePostId}}
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "title": "New title", "hashtags": ["updated"] }
+
+### Unpublish (back to draft)
+POST {{baseUrl}}/api/v1/cms/posts/{{livePostId}}/unpublish
+Authorization: Bearer {{token}}
+
+### ---------------------------------------------------------------- Pagination
+
+### Reader: page 2 with 5 items per page (limit is capped at 100)
+GET {{baseUrl}}/api/v1/posts?page=2&limit=5
+
+### ---------------------------------------------------------------- Error cases
+
+### 401 - missing token
+GET {{baseUrl}}/api/v1/cms/posts
+
+### 401 - wrong token
+GET {{baseUrl}}/api/v1/cms/posts
+Authorization: Bearer wrong-token
+
+### 400 - validation error (empty title, body missing, bad hashtag)
+POST {{baseUrl}}/api/v1/cms/posts
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "title": "", "hashtags": ["not valid!"] }
+
+### 400 - malformed JSON
+POST {{baseUrl}}/api/v1/cms/posts
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "title": 
+
+### 400 - invalid query (page must be >= 1)
+GET {{baseUrl}}/api/v1/posts?page=0
+
+### 400 - PATCH rejects unknown fields such as status or author
+PATCH {{baseUrl}}/api/v1/cms/posts/{{livePostId}}
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "status": "published" }
+
+### 404 - post that does not exist
+GET {{baseUrl}}/api/v1/posts/64b7f0f0f0f0f0f0f0f0f0f0
+
+### 404 - malformed id
+GET {{baseUrl}}/api/v1/posts/not-an-id
+
+### 404 - unknown route
+GET {{baseUrl}}/api/v1/nothing-here
+
+### 415 - body that is not JSON
+POST {{baseUrl}}/api/v1/cms/posts
+Authorization: Bearer {{token}}
+Content-Type: text/plain
+
+just text

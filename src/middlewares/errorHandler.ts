@@ -1,6 +1,7 @@
 import { STATUS_CODES } from 'node:http';
 import type { ErrorRequestHandler } from 'express';
 import { env } from '../config/env.js';
+import { getRequestId } from './requestId.js';
 import { ApiError } from '../utils/ApiError.js';
 import { logger } from '../utils/logger.js';
 
@@ -46,13 +47,17 @@ function toApiError(err: unknown): ApiError | null {
 // Express identifies error middleware by its 4-argument signature, so `_next` must stay.
 export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
   const apiError = toApiError(err);
+  const requestId = getRequestId(res);
+  // Errors are never cacheable, whatever route they came from.
+  res.set('Cache-Control', 'no-store');
 
   if (!apiError) {
-    logger.error({ err, method: req.method, url: req.originalUrl }, 'Unhandled error');
+    logger.error({ err, requestId, method: req.method, url: req.originalUrl }, 'Unhandled error');
     res.status(500).json({
       error: {
         code: 'INTERNAL_SERVER_ERROR',
         message: 'Internal server error',
+        ...(requestId ? { requestId } : {}),
         // Stack traces are only ever exposed in development.
         ...(env.NODE_ENV === 'development' && err instanceof Error
           ? { details: { stack: err.stack } }
@@ -67,6 +72,7 @@ export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
     error: {
       code: apiError.code,
       message: apiError.message,
+      ...(requestId ? { requestId } : {}),
       ...(apiError.details !== undefined ? { details: apiError.details } : {}),
     },
   });

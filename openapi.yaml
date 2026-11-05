@@ -8,8 +8,13 @@ info:
     * **Reader** endpoints (`/api/v1/posts`) are public and only ever return **published** posts.
     * **CMS** endpoints (`/api/v1/cms/*`) require `Authorization: Bearer <token>`.
       The default test token is `brianfox-cms-token` (override with `CMS_API_TOKEN`).
-    * Every error uses the shape `{ "error": { "code", "message", "details?" } }`.
+    * Every error uses the shape `{ "error": { "code", "message", "details?", "requestId?" } }`.
     * A malformed post id is reported as `404` (it can never match a post).
+    * Every response carries `X-Request-Id` (an incoming value is reused, otherwise generated); errors repeat it as `error.requestId`.
+    * Rate limits apply per client IP (public reader routes and CMS routes are counted separately).
+      Responses expose `RateLimit-Limit`, `RateLimit-Remaining` and `RateLimit-Reset`; when exceeded the API answers `429` with `Retry-After`.
+    * Public reads send `Cache-Control: public, no-cache` (or `public, max-age=N` when `PUBLIC_CACHE_MAX_AGE` is set) and a weak `ETag`: send it back as
+      `If-None-Match` to get `304 Not Modified`. CMS responses are `Cache-Control: no-store`.
 servers:
   - url: /
 tags:
@@ -45,10 +50,19 @@ paths:
       responses:
         '200':
           description: A page of published posts
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/RequestId' }
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control: { $ref: '#/components/headers/PublicCacheControl' }
+            RateLimit-Limit: { $ref: '#/components/headers/RateLimitLimit' }
+            RateLimit-Remaining: { $ref: '#/components/headers/RateLimitRemaining' }
+            RateLimit-Reset: { $ref: '#/components/headers/RateLimitReset' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PostPage' }
+        '304': { $ref: '#/components/responses/NotModified' }
         '400': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '500': { $ref: '#/components/responses/InternalError' }
   /api/v1/posts/{id}:
     get:
@@ -60,10 +74,19 @@ paths:
       responses:
         '200':
           description: The post
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/RequestId' }
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control: { $ref: '#/components/headers/PublicCacheControl' }
+            RateLimit-Limit: { $ref: '#/components/headers/RateLimitLimit' }
+            RateLimit-Remaining: { $ref: '#/components/headers/RateLimitRemaining' }
+            RateLimit-Reset: { $ref: '#/components/headers/RateLimitReset' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PostResponse' }
+        '304': { $ref: '#/components/responses/NotModified' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '500': { $ref: '#/components/responses/InternalError' }
   /api/v1/cms/posts:
     get:
@@ -86,6 +109,7 @@ paths:
               schema: { $ref: '#/components/schemas/PostPage' }
         '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '500': { $ref: '#/components/responses/InternalError' }
     post:
       tags: [CMS]
@@ -111,6 +135,7 @@ paths:
         '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '500': { $ref: '#/components/responses/InternalError' }
   /api/v1/cms/posts/{id}:
     parameters:
@@ -127,6 +152,7 @@ paths:
               schema: { $ref: '#/components/schemas/PostResponse' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '500': { $ref: '#/components/responses/InternalError' }
     patch:
       tags: [CMS]
@@ -151,6 +177,7 @@ paths:
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '500': { $ref: '#/components/responses/InternalError' }
     delete:
       tags: [CMS]
@@ -160,6 +187,7 @@ paths:
         '204': { description: Deleted }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '500': { $ref: '#/components/responses/InternalError' }
   /api/v1/cms/posts/{id}/publish:
     post:
@@ -177,6 +205,7 @@ paths:
               schema: { $ref: '#/components/schemas/PostResponse' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '500': { $ref: '#/components/responses/InternalError' }
   /api/v1/cms/posts/{id}/unpublish:
     post:
@@ -194,6 +223,7 @@ paths:
               schema: { $ref: '#/components/schemas/PostResponse' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '500': { $ref: '#/components/responses/InternalError' }
 components:
   securitySchemes:
@@ -201,6 +231,28 @@ components:
       type: http
       scheme: bearer
       description: Default test token `brianfox-cms-token`
+  headers:
+    RequestId:
+      description: Id of this request (the incoming `X-Request-Id` if valid, otherwise generated). Also in the logs.
+      schema: { type: string, example: 3f0c3a52-8f1e-4a0e-9d57-0c5b7d1c2a10 }
+    ETag:
+      description: Weak validator of the body. Send it as `If-None-Match` to get `304 Not Modified`.
+      schema: { type: string, example: 'W/"1c4-abc123"' }
+    PublicCacheControl:
+      description: Default `public, no-cache` (caches must revalidate, so changes show up at once); `public, max-age=N` when PUBLIC_CACHE_MAX_AGE is set.
+      schema: { type: string, example: 'public, no-cache' }
+    RateLimitLimit:
+      description: Requests allowed per window for this client IP
+      schema: { type: integer, example: 120 }
+    RateLimitRemaining:
+      description: Requests left in the current window
+      schema: { type: integer, example: 119 }
+    RateLimitReset:
+      description: Seconds until the window resets
+      schema: { type: integer, example: 60 }
+    RetryAfter:
+      description: Seconds to wait before retrying
+      schema: { type: integer, example: 60 }
   parameters:
     PostId:
       name: id
@@ -235,6 +287,24 @@ components:
       description: Page size. Values above 100 are accepted and capped to 100 (see `meta.limit`).
       schema: { type: integer, minimum: 1, default: 10 }
   responses:
+    NotModified:
+      description: The `If-None-Match` validator still matches; no body is sent
+      headers:
+        ETag: { $ref: '#/components/headers/ETag' }
+        Cache-Control: { $ref: '#/components/headers/PublicCacheControl' }
+        X-Request-Id: { $ref: '#/components/headers/RequestId' }
+    TooManyRequests:
+      description: Rate limit exceeded for this client IP; retry after the indicated delay
+      headers:
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
+        RateLimit-Limit: { $ref: '#/components/headers/RateLimitLimit' }
+        RateLimit-Remaining: { $ref: '#/components/headers/RateLimitRemaining' }
+        RateLimit-Reset: { $ref: '#/components/headers/RateLimitReset' }
+        X-Request-Id: { $ref: '#/components/headers/RequestId' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: { code: TOO_MANY_REQUESTS, message: 'Too many requests, please retry later', requestId: 3f0c3a52-8f1e-4a0e-9d57-0c5b7d1c2a10 } }
     ValidationError:
       description: Invalid input or malformed JSON
       content:
@@ -341,6 +411,7 @@ components:
               example: VALIDATION_ERROR
             message: { type: string }
             details: {}
+            requestId: { type: string, description: Same value as the X-Request-Id response header }
     Health:
       type: object
       properties:
