@@ -34,7 +34,6 @@ const postSchema = new Schema<IPost>(
     toJSON: {
       virtuals: true,
       versionKey: false,
-      // Expose `id` instead of `_id`.
       transform: (_doc, ret: Record<string, unknown>) => {
         delete ret._id;
         return ret;

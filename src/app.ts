@@ -13,7 +13,7 @@ import { createRateLimiter } from './middlewares/rateLimit.js';
 import type { RateLimitOptions } from './middlewares/rateLimit.js';
 import { genReqId, requestId } from './middlewares/requestId.js';
 import { cmsPostsRouter, publicPostsRouter } from './modules/posts/post.routes.js';
-import { logger as defaultLogger } from './utils/logger.js';
+import { compactHttpSerializers, logger as defaultLogger } from './utils/logger.js';
 import type { Logger } from 'pino';
 
 export interface AppOptions {
@@ -44,7 +44,13 @@ export function createApp({
   app.set('etag', false);
 
   app.use(requestId);
-  app.use(pinoHttp({ logger, genReqId }));
+  app.use(
+    pinoHttp({
+      logger,
+      genReqId,
+      ...(env.NODE_ENV === 'development' ? { serializers: compactHttpSerializers } : {}),
+    }),
+  );
 
   // Swagger UI needs inline scripts that helmet's default CSP blocks, so docs are mounted first.
   app.use('/docs', ...createDocsHandlers());

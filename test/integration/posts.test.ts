@@ -309,6 +309,17 @@ describe('PATCH /api/v1/cms/posts/:id', () => {
     expect(res.status).toBe(400);
   });
 
+  it('reports only the unrecognized key for PATCH {"status"}', async () => {
+    const post = await createPost();
+    const res = await api()
+      .patch(`/api/v1/cms/posts/${post.id}`)
+      .set(auth)
+      .send({ status: 'published' });
+    expect(res.status).toBe(400);
+    expect(res.body.error.details).toHaveLength(1);
+    expect(res.body.error.details[0].message).toMatch(/unrecognized key/i);
+  });
+
   it('returns 404 for a missing post', async () => {
     const res = await api().patch(`/api/v1/cms/posts/${MISSING_ID}`).set(auth).send({ title: 'x' });
     expect(res.status).toBe(404);

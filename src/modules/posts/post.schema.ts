@@ -52,10 +52,11 @@ export const updatePostBody = z
     body: body.optional(),
     hashtags: hashtagsBody.optional(),
   })
-  .refine(
-    (value) => Object.keys(value).length > 0,
-    'Provide at least one of: title, body, hashtags',
-  );
+  .refine((value) => Object.keys(value).length > 0, {
+    message: 'Provide at least one of: title, body, hashtags',
+    // Skipped when the object already has issues (e.g. an unrecognized key): one clear error.
+    when: (payload) => payload.issues === undefined || payload.issues.length === 0,
+  });
 
 // Deliberately no ObjectId check here: a zod failure would produce a 400, whereas a malformed
 // id is reported as 404 ("no such post"). That check lives in the service (assertValidId).

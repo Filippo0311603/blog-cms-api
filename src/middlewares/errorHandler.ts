@@ -52,7 +52,11 @@ export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
   res.set('Cache-Control', 'no-store');
 
   if (!apiError) {
-    logger.error({ err, requestId, method: req.method, url: req.originalUrl }, 'Unhandled error');
+    // req.log is the pino-http child logger: it already binds the request id, method and url.
+    // Without it (error raised before pino-http ran), log those fields explicitly.
+    if (req.log) req.log.error({ err }, 'Unhandled error');
+    else
+      logger.error({ err, requestId, method: req.method, url: req.originalUrl }, 'Unhandled error');
     res.status(500).json({
       error: {
         code: 'INTERNAL_SERVER_ERROR',
